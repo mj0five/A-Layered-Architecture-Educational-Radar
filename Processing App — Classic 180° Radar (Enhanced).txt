@@ -1,0 +1,324 @@
+/*
+ * ============================================================================
+ * Processing 3.5.4 — Real-Time Radar Visualization (180° Sector Display)
+ * ============================================================================
+ * 
+ * Visualization Mode: Classic aviation-style radar with phosphor persistence
+ * Display Range: 0° to 180° semicircular sector
+ * Data Source: Arduino UNO via USB Serial (CSV protocol)
+ * 
+ * Serial Protocol: [Angle],[Distance].
+ *   - Angle: Integer, 0-180 degrees
+ *   - Distance: Integer, 0-200 cm (capped at effective range)
+ *   - Terminator: Period character '.'
+ * 
+ * Visual Features:
+ *   - Phosphor persistence fade effect (classic CRT radar appearance)
+ *   - Angular grid lines at 30° intervals
+ *   - Range rings at 10, 20, 30, 40 cm
+ *   - Dynamic target plotting with proximity color coding
+ *   - Real-time telemetry readout panel
+ * 
+ * Author: MohammadJavad Zaker Esfahani
+ * Supervisor: Mehran Hosseinzadeh Dizaj
+ * Institution: Islamic Azad University, Central Branch, Tehran, Iran
+ * ============================================================================
+ */
+
+import processing.serial.*;
+
+// =============================================================================
+// SERIAL COMMUNICATION CONFIGURATION
+// =============================================================================
+
+Serial serialPort;
+final String SERIAL_PORT_NAME = "COM18";    // Update per Arduino IDE Tools > Port
+final int SERIAL_BAUD_RATE = 9600;
+
+// =============================================================================
+// DISPLAY CONSTANTS
+// =============================================================================
+
+final color COLOR_RADAR_GREEN = color(98, 245, 31);
+final color COLOR_ALERT_RED = color(255, 10, 10);
+final color COLOR_SWEEP_LINE = color(30, 250, 60);
+final color COLOR_BACKGROUND = color(0);
+final color COLOR_PANEL_BG = color(0, 0, 0);
+
+final int FONT_SIZE_SMALL = 25;
+final int FONT_SIZE_LARGE = 40;
+
+// Radar geometry (relative to canvas dimensions)
+final float RADAR_ORIGIN_Y_RATIO = 0.926;     // Radar center Y-position
+final float RADAR_RANGE_MAX_CM = 40.0;        // Maximum displayed range (cm)
+
+// =============================================================================
+// SYSTEM STATE VARIABLES
+// =============================================================================
+
+int currentAngle = 0;           // Servo angle: 0-180°
+int currentDistance = 0;        // Measured distance: 0-200 cm
+
+// =============================================================================
+// INITIALIZATION
+// =============================================================================
+
+void setup() {
+  size(1000, 500);
+  smooth();
+  
+  // Initialize serial port with packet terminator '.'
+  try {
+    serialPort = new Serial(this, SERIAL_PORT_NAME, SERIAL_BAUD_RATE);
+    serialPort.clear();
+    serialPort.bufferUntil('.');
+  } catch (Exception e) {
+    println("ERROR: Failed to open serial port " + SERIAL_PORT_NAME);
+    println("Available ports:");
+    println(Serial.list());
+    exit();
+  }
+  
+  textFont(createFont("Consolas", FONT_SIZE_SMALL));
+}
+
+// =============================================================================
+// MAIN DRAW LOOP
+// =============================================================================
+
+void draw() {
+  // --- Phosphor Persistence Effect ---
+  // Apply ultra-low alpha overlay to create gradual fade trail
+  fill(0, 4);
+  noStroke();
+  rect(0, 0, width, height * 0.935);
+  
+  // --- Set Radar Color Theme ---
+  fill(COLOR_RADAR_GREEN);
+  noStroke();
+  
+  // --- Render Radar Components ---
+  drawRadarGrid();
+  drawSweepLine();
+  drawDetectedObject();
+  drawTelemetryPanel();
+}
+
+// =============================================================================
+// SERIAL EVENT HANDLER
+// Protocol: [Angle],[Distance].
+// =============================================================================
+
+void serialEvent(Serial port) {
+  try {
+    String incomingData = port.readStringUntil('.');
+    
+    if (incomingData == null || incomingData.length() < 3) {
+      return;
+    }
+    
+    // Remove terminator and whitespace
+    incomingData = incomingData.trim();
+    incomingData = incomingData.substring(0, incomingData.length() - 1);
+    
+    // Parse CSV fields
+    int commaIndex = incomingData.indexOf(',');
+    
+    if (commaIndex > 0 && commaIndex < incomingData.length() - 1) {
+      String angleString = incomingData.substring(0, commaIndex);
+      String distanceString = incomingData.substring(commaIndex + 1);
+      
+      currentAngle = parseNumericString(angleString);
+      currentDistance = parseNumericString(distanceString);
+    }
+    
+  } catch (RuntimeException e) {
+    // Silently handle malformed packets to maintain visualization continuity
+  }
+}
+
+// =============================================================================
+// RADAR GRID RENDERING
+// =============================================================================
+
+void drawRadarGrid() {
+  pushMatrix();
+  translate(width / 2.0, RADAR_ORIGIN_Y_RATIO * height);
+  
+  noFill();
+  strokeWeight(2);
+  stroke(COLOR_RADAR_GREEN);
+  
+  // --- Range Arcs (concentric semicircles) ---
+  // Coefficients map to 10, 20, 30, 40 cm range rings
+  drawRangeArc(0.9375);   // ~10 cm
+  drawRangeArc(0.7300);   // ~20 cm
+  drawRangeArc(0.5210);   // ~30 cm
+  drawRangeArc(0.3130);   // ~40 cm
+  
+  // --- Angular Grid Lines ---
+  // Horizontal baseline (0° reference)
+  line(-width / 2.0, 0, width / 2.0, 0);
+  
+  // Radial lines at 30° intervals
+  for (int angle = 30; angle <= 150; angle += 30) {
+    drawRadialLine(angle);
+  }
+  
+  // Close the sector at 180°
+  line(-width / 2.0 * cos(radians(30)), 0, width / 2.0, 0);
+  
+  popMatrix();
+}
+
+void drawRangeArc(float diameterCoefficient) {
+  arc(0, 0, diameterCoefficient * width, diameterCoefficient * width, PI, TWO_PI);
+}
+
+void drawRadialLine(int angleDegrees) {
+  float rad = radians(angleDegrees);
+  line(0, 0, 
+       (-width / 2.0) * cos(rad), 
+       (-width / 2.0) * sin(rad));
+}
+
+// =============================================================================
+// SWEEP LINE RENDERING
+// =============================================================================
+
+void drawSweepLine() {
+  pushMatrix();
+  translate(width / 2.0, RADAR_ORIGIN_Y_RATIO * height);
+  
+  strokeWeight(9);
+  stroke(COLOR_SWEEP_LINE);
+  
+  float rad = radians(currentAngle);
+  float lineLength = 0.88 * height;
+  
+  // Draw primary sweep arm
+  line(0, 0, 
+       lineLength * cos(rad), 
+       -lineLength * sin(rad));
+  
+  popMatrix();
+}
+
+// =============================================================================
+// TARGET DETECTION RENDERING
+// =============================================================================
+
+void drawDetectedObject() {
+  // Only render if object is within displayed range and valid
+  if (currentDistance >= RADAR_RANGE_MAX_CM || currentDistance <= 0) {
+    return;
+  }
+  
+  pushMatrix();
+  translate(width / 2.0, RADAR_ORIGIN_Y_RATIO * height);
+  
+  strokeWeight(9);
+  stroke(COLOR_ALERT_RED);
+  
+  // Convert distance to screen pixels
+  float pixelScale = 0.020835 * height;
+  int pixelDistance = (int)(currentDistance * pixelScale);
+  
+  float rad = radians(currentAngle);
+  float cosAngle = cos(rad);
+  float sinAngle = sin(rad);
+  
+  // Target position (inner point)
+  int x1 = (int)(pixelDistance * cosAngle);
+  int y1 = (int)(-pixelDistance * sinAngle);
+  
+  // Sweep arm intersection (outer point)
+  int x2 = (int)(0.495 * width * cosAngle);
+  int y2 = (int)(-0.495 * width * sinAngle);
+  
+  // Draw detection line from target to sweep perimeter
+  line(x1, y1, x2, y2);
+  
+  popMatrix();
+}
+
+// =============================================================================
+// TELEMETRY PANEL RENDERING
+// =============================================================================
+
+void drawTelemetryPanel() {
+  pushMatrix();
+  
+  // Panel background
+  fill(COLOR_PANEL_BG);
+  noStroke();
+  rect(0, 0.9352 * height, width, height - 0.9352 * height);
+  
+  // Range ring labels
+  fill(COLOR_RADAR_GREEN);
+  textSize(FONT_SIZE_SMALL);
+  textAlign(LEFT, BASELINE);
+  
+  text("10cm", 0.6146 * width, 0.9167 * height);
+  text("20cm", 0.7190 * width, 0.9167 * height);
+  text("30cm", 0.8230 * width, 0.9167 * height);
+  text("40cm", 0.9271 * width, 0.9167 * height);
+  
+  // Status readouts
+  textSize(FONT_SIZE_LARGE);
+  
+  // Object detection status
+  String objectStatus = (currentDistance < RADAR_RANGE_MAX_CM && currentDistance > 0) 
+                        ? "In Range" : "Out of Range";
+  text("Object: " + objectStatus, 0.125 * width, 0.9723 * height);
+  
+  // Angular position
+  text("Angle: " + currentAngle + " °", 0.52 * width, 0.9723 * height);
+  
+  // Distance measurement
+  text("Distance: ", 0.74 * width, 0.9723 * height);
+  if (currentDistance < RADAR_RANGE_MAX_CM) {
+    text(" " + currentDistance + " cm", 0.775 * width, 0.9723 * height);
+  }
+  
+  // Angular labels around perimeter
+  textSize(FONT_SIZE_SMALL);
+  fill(98, 245, 60);
+  
+  drawAngularLabel(30,  -60, 0.5006, 0.9093);
+  drawAngularLabel(60,  -30, 0.4970, 0.9112);
+  drawAngularLabel(90,    0, 0.4930, 0.9167);
+  drawAngularLabel(120, -30, 0.4870, 0.9287);
+  drawAngularLabel(150, -60, 0.4896, 0.9426);
+  
+  popMatrix();
+}
+
+void drawAngularLabel(int angle, int rotation, float xRatio, float yRatio) {
+  pushMatrix();
+  translate(xRatio * width + (width / 2.0) * cos(radians(angle)),
+            yRatio * height - (width / 2.0) * sin(radians(angle)));
+  rotate(radians(rotation));
+  text(angle + "°", 0, 0);
+  popMatrix();
+}
+
+// =============================================================================
+// UTILITY: SAFE NUMERIC STRING PARSER
+// Replaces Integer.parseInt() to handle non-numeric characters gracefully
+// =============================================================================
+
+int parseNumericString(String input) {
+  int value = 0;
+  boolean hasDigits = false;
+  
+  for (int i = 0; i < input.length(); i++) {
+    char c = input.charAt(i);
+    if (c >= '0' && c <= '9') {
+      value = (value * 10) + (c - '0');
+      hasDigits = true;
+    }
+  }
+  
+  return hasDigits ? value : 0;
+}

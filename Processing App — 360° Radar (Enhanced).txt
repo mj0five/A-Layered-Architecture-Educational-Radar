@@ -1,0 +1,270 @@
+/*
+ * ============================================================================
+ * Processing 3.5.4 — Real-Time Radar Visualization (360° Polar Display)
+ * ============================================================================
+ * 
+ * Visualization Mode: Full circular radar with concentric range rings
+ * Display Range: 0° to 360° complete polar coverage
+ * Data Source: Arduino UNO via USB Serial (CSV protocol)
+ * 
+ * Serial Protocol: [Angle],[Distance].
+ *   - Angle: Integer, 0-359 degrees
+ *   - Distance: Integer, 0-250 cm (capped at display radius)
+ *   - Terminator: Period character '.'
+ * 
+ * Visual Features:
+ *   - Black background with green polar grid
+ *   - Concentric range rings at 50 cm intervals (up to 250 cm)
+ *   - Radial angular lines every 15°
+ *   - Rotating sweep line with translucent trail effect
+ *   - Red target markers with fade-out persistence
+ * 
+ * Author: MohammadJavad Zaker Esfahani
+ * Supervisor: Mehran Hosseinzadeh Dizaj
+ * Institution: Islamic Azad University, Central Branch, Tehran, Iran
+ * ============================================================================
+ */
+
+import processing.serial.*;
+
+// =============================================================================
+// SERIAL COMMUNICATION CONFIGURATION
+// =============================================================================
+
+Serial serialPort;
+final String SERIAL_PORT_NAME = "COM18";    // Update per Arduino IDE Tools > Port
+final int SERIAL_BAUD_RATE = 9600;
+
+// =============================================================================
+// DISPLAY CONSTANTS
+// =============================================================================
+
+final int CANVAS_SIZE = 800;              // Square canvas dimension (pixels)
+final int RADAR_RADIUS_PX = 250;          // Radar display radius
+final int RANGE_RING_INTERVAL_CM = 50;    // Range ring spacing
+final int NUM_RANGE_RINGS = 5;            // 50, 100, 150, 200, 250 cm
+final int ANGULAR_GRID_STEP = 15;         // Degrees between radial lines
+
+final color COLOR_GRID_DARK = color(0, 100, 0);
+final color COLOR_GRID_LIGHT = color(0, 150, 0);
+final color COLOR_SWEEP = color(0, 255, 0, 150);
+final color COLOR_TARGET = color(255, 0, 0);
+final color COLOR_TARGET_FILL = color(255, 0, 0, 200);
+final color COLOR_TRAIL = color(0, 255, 0);
+
+// =============================================================================
+// SYSTEM STATE VARIABLES
+// =============================================================================
+
+String incomingPacket = "";
+int currentAngle = 90;        // Default center position
+int currentDistance = 250;    // Default: no target (max range)
+
+// Trail effect storage
+int[] trailAngles = new int[20];
+int[] trailDistances = new int[20];
+int trailIndex = 0;
+
+// =============================================================================
+// INITIALIZATION
+// =============================================================================
+
+void setup() {
+  size(800, 800);
+  
+  // Initialize serial communication
+  try {
+    serialPort = new Serial(this, SERIAL_PORT_NAME, SERIAL_BAUD_RATE);
+    serialPort.bufferUntil('.');
+  } catch (Exception e) {
+    println("ERROR: Failed to open serial port " + SERIAL_PORT_NAME);
+    println("Available ports:");
+    println(Serial.list());
+    exit();
+  }
+  
+  background(0);
+  
+  // Initialize trail buffer
+  for (int i = 0; i < trailAngles.length; i++) {
+    trailAngles[i] = -1;
+    trailDistances[i] = -1;
+  }
+}
+
+// =============================================================================
+// MAIN DRAW LOOP
+// =============================================================================
+
+void draw() {
+  background(0);
+  
+  // Center coordinate system on canvas
+  translate(width / 2.0, height / 2.0);
+  
+  // --- Render Static Grid ---
+  drawPolarGrid();
+  
+  // --- Render Sweep Trail (Persistence Effect) ---
+  drawSweepTrail();
+  
+  // --- Render Current Sweep Line ---
+  drawSweepLine();
+  
+  // --- Render Detected Target ---
+  drawTargetMarker();
+}
+
+// =============================================================================
+// SERIAL EVENT HANDLER
+// Protocol: [Angle],[Distance].
+// =============================================================================
+
+void serialEvent(Serial port) {
+  incomingPacket = port.readStringUntil('.');
+  
+  if (incomingPacket == null) {
+    return;
+  }
+  
+  incomingPacket = incomingPacket.trim();
+  
+  // Remove terminator
+  if (incomingPacket.endsWith(".")) {
+    incomingPacket = incomingPacket.substring(0, incomingPacket.length() - 1);
+  }
+  
+  // Parse CSV fields
+  String[] values = split(incomingPacket, ",");
+  
+  if (values.length == 2) {
+    int parsedAngle = parseNumericString(values[0]);
+    int parsedDistance = parseNumericString(values[1]);
+    
+    // Validate and constrain
+    currentAngle = parsedAngle % 360;
+    currentDistance = constrain(parsedDistance, 0, RADAR_RADIUS_PX);
+    
+    // Store in trail buffer
+    trailAngles[trailIndex] = currentAngle;
+    trailDistances[trailIndex] = currentDistance;
+    trailIndex = (trailIndex + 1) % trailAngles.length;
+  }
+}
+
+// =============================================================================
+// POLAR GRID RENDERING
+// =============================================================================
+
+void drawPolarGrid() {
+  noFill();
+  
+  // --- Concentric Range Rings ---
+  stroke(COLOR_GRID_DARK);
+  strokeWeight(1);
+  
+  for (int i = 1; i <= NUM_RANGE_RINGS; i++) {
+    int ringDiameter = i * 100;  // 100px per ring = 50 cm scale
+    ellipse(0, 0, ringDiameter, ringDiameter);
+  }
+  
+  // --- Radial Angular Lines ---
+  stroke(COLOR_GRID_LIGHT);
+  
+  for (int angle = 0; angle < 180; angle += ANGULAR_GRID_STEP) {
+    float rad = radians(angle);
+    float x = cos(rad) * RADAR_RADIUS_PX;
+    float y = -sin(rad) * RADAR_RADIUS_PX;
+    
+    // Draw line through center (0-180° and 180-360°)
+    line(x, y, -x, -y);
+  }
+}
+
+// =============================================================================
+// SWEEP LINE RENDERING
+// =============================================================================
+
+void drawSweepLine() {
+  strokeWeight(2);
+  stroke(COLOR_SWEEP);
+  
+  float rad = radians(currentAngle);
+  float x = cos(rad) * RADAR_RADIUS_PX;
+  float y = -sin(rad) * RADAR_RADIUS_PX;
+  
+  line(0, 0, x, y);
+}
+
+// =============================================================================
+// SWEEP TRAIL (PERSISTENCE) RENDERING
+// =============================================================================
+
+void drawSweepTrail() {
+  noFill();
+  
+  for (int i = 0; i < trailAngles.length; i++) {
+    if (trailAngles[i] < 0) continue;  // Skip uninitialized entries
+    
+    // Calculate fade based on age
+    int age = (trailIndex - i + trailAngles.length) % trailAngles.length;
+    int alpha = (int)map(age, 0, trailAngles.length, 150, 0);
+    
+    if (alpha <= 0) continue;
+    
+    stroke(0, 255, 0, alpha);
+    strokeWeight(1);
+    
+    float rad = radians(trailAngles[i]);
+    float x = cos(rad) * RADAR_RADIUS_PX;
+    float y = -sin(rad) * RADAR_RADIUS_PX;
+    
+    line(0, 0, x, y);
+  }
+}
+
+// =============================================================================
+// TARGET MARKER RENDERING
+// =============================================================================
+
+void drawTargetMarker() {
+  if (currentDistance >= RADAR_RADIUS_PX || currentDistance <= 0) {
+    return;  // No valid target within display range
+  }
+  
+  float rad = radians(currentAngle);
+  
+  // Scale distance to radar radius
+  float plotRadius = currentDistance * (RADAR_RADIUS_PX / 250.0);
+  float plotX = cos(rad) * plotRadius;
+  float plotY = -sin(rad) * plotRadius;
+  
+  // Draw target marker
+  stroke(COLOR_TARGET);
+  fill(COLOR_TARGET_FILL);
+  strokeWeight(2);
+  ellipse(plotX, plotY, 12, 12);
+  
+  // Draw radial detection line from center to target
+  stroke(COLOR_TARGET, 100);
+  line(0, 0, plotX, plotY);
+}
+
+// =============================================================================
+// UTILITY: SAFE NUMERIC STRING PARSER
+// =============================================================================
+
+int parseNumericString(String input) {
+  int value = 0;
+  boolean hasDigits = false;
+  
+  for (int i = 0; i < input.length(); i++) {
+    char c = input.charAt(i);
+    if (c >= '0' && c <= '9') {
+      value = (value * 10) + (c - '0');
+      hasDigits = true;
+    }
+  }
+  
+  return hasDigits ? value : 0;
+}
